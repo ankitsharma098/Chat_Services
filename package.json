@@ -4,10 +4,11 @@
   "description": "",
   "main": "index.js",
   "type": "commonjs",
- "scripts": {
-    "dev": "npx nodemon index.js",
+   "scripts": {
+    "dev": "node index.js",
     "start": "node index.js"
   },
+
   "author": "",
   "license": "ISC",
   "dependencies": {
