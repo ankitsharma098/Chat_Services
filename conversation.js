@@ -48,8 +48,9 @@ const mongoose = require('mongoose');
 const messageSchema = new mongoose.Schema({
   senderId: String,
   message: String,
-  type: String,
+ type: { type: String, default: 'text' },
   timestamp: Date,
+   mediaUrl: { type: String, default: null },
 });
 
 const conversationSchema = new mongoose.Schema({

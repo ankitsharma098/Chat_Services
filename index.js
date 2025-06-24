@@ -205,7 +205,7 @@ socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => 
   // This logic is now OUTSIDE the 'if (toSocketId)' block.
   const msg = {
     senderId: from,
-    message: `Asked ${to}: Are you available?`,
+    message: `Are you available?`,
     type: 'text', // Or a system message type
     timestamp: new Date(),
   };
@@ -257,7 +257,7 @@ socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => 
 
       const msg = {
         senderId: from,
-        message: `Responded to ${to}: ${responseText}`,
+        message: `${responseText}`,
         type: 'text',
         timestamp: new Date(),
       };
@@ -291,7 +291,7 @@ socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => 
 
         const msg = {
           senderId: from,
-          message: `Asked ${to}: Share your bank details?`,
+          message: `Share your bank details?`,
           type: 'text',
           timestamp: new Date(),
         };
@@ -351,34 +351,93 @@ socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => 
       }
     });
 
-    socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
-      const toSocketId = users[to];
-      const uniqueRoomId = `${flowType}_${roomId}`;
-      if (toSocketId) {
-        io.to(toSocketId).emit('receivePaymentReceipt', { from, message: 'Payment done' });
-        console.log(`🧾 ${from} sent payment receipt to ${to}`);
+    // socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
+    //   const toSocketId = users[to];
+    //   const uniqueRoomId = `${flowType}_${roomId}`;
+    //   if (toSocketId) {
+    //     io.to(toSocketId).emit('receivePaymentReceipt', { from, message: 'Payment done' });
+    //     console.log(`🧾 ${from} sent payment receipt to ${to}`);
 
-        const msg = {
-          senderId: from,
-          message: 'Payment Receipt Sent',
-          type: 'text',
-          timestamp: new Date(),
-        };
-        try {
-          await Conversation.findOneAndUpdate(
-            { roomId },
-            {
-              $push: { messages: msg },
-              $set: { currentStep: 'receiptSent', updatedAt: Date.now() },
-            }
-          );
-          console.log(`✅ Payment receipt saved for room ${roomId}`);
-        } catch (err) {
-          console.error(`❌ Error saving payment receipt for room ${roomId}:`, err);
-        }
-      }
-    });
+    //     const msg = {
+    //       senderId: from,
+    //       message: 'Payment Receipt Sent',
+    //       type: 'text',
+    //       timestamp: new Date(),
+    //     };
+    //     try {
+    //       await Conversation.findOneAndUpdate(
+    //         { roomId },
+    //         {
+    //           $push: { messages: msg },
+    //           $set: { currentStep: 'receiptSent', updatedAt: Date.now() },
+    //         }
+    //       );
+    //       console.log(`✅ Payment receipt saved for room ${roomId}`);
+    //     } catch (err) {
+    //       console.error(`❌ Error saving payment receipt for room ${roomId}:`, err);
+    //     }
+    //   }
+    // });
 
+// In your index.js file inside the io.on('connection', ...) block
+
+// Find the commented-out `socket.on('sendMediaReceipt', ...)` and replace it with this:
+// In your index.js file
+
+// REPLACE your existing 'sendMediaReceipt' handler with this one.
+socket.on('sendMediaReceipt', async ({ from, to, roomId, flowType, mediaUrl }) => {
+  const uniqueRoomId = `${flowType}_${roomId}`;
+
+  // 1. Create the message object
+  const msg = {
+    senderId: from,
+    message: 'Payment Receipt Sent',
+    type: 'image',
+    mediaUrl: mediaUrl,
+    timestamp: new Date(),
+  };
+  
+  try {
+    // 2. Find the conversation and update it in one step.
+    // The `{ new: true }` option tells Mongoose to return the document *after* the update has been applied.
+    const updatedConversation = await Conversation.findOneAndUpdate(
+      { roomId },
+      {
+        $push: { messages: msg }, // Add the new image message
+        $set: { currentStep: 'receiptSent', updatedAt: Date.now() }, // Advance the workflow step
+      },
+      { upsert: true, new: true }
+    );
+
+    if (updatedConversation) {
+      // *** THE FIX IS HERE ***
+      // 3. Broadcast the ENTIRE updated state to EVERYONE in the room.
+      // This is the single source of truth. Both the buyer and seller will receive this
+      // and update their UI to the 'receiptSent' step.
+      io.to(uniqueRoomId).emit('conversation_history', {
+        messages: updatedConversation.messages,
+        currentStep: updatedConversation.currentStep,
+        isCompleted: updatedConversation.isCompleted,
+        userId: updatedConversation.userId,
+        peerId: updatedConversation.peerId,
+        orderId: updatedConversation.orderId,
+        flowType: updatedConversation.flowType,
+      });
+
+      console.log(`✅ [${uniqueRoomId}] Receipt sent. Broadcasted updated state to 'receiptSent'.`);
+    }
+
+  } catch (err) {
+    console.error(`❌ [${uniqueRoomId}] Error saving/broadcasting payment receipt:`, err);
+  }
+});
+// You can now safely REMOVE the old `socket.on('sendReceipt', ...)` handler
+// as it's been replaced by the 'sendMediaReceipt' logic.
+/*
+socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
+  // ... this logic is now obsolete ...
+});
+*/
     socket.on('confirmPaymentStatus', async ({ from, to, status, roomId, flowType }) => {
       const toSocketId = users[to];
       const fromSocketId = users[from];
