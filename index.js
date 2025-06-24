@@ -22,10 +22,7 @@ const io = socketIO(server, {
 });
 
 // MongoDB connection
-mongoose.connect("mongodb+srv://ankits45987:major@cluster0.ovdsg.mongodb.net/", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose.connect("mongodb+srv://ankits45987:major@cluster0.ovdsg.mongodb.net/")
   .then(() => console.log('🚀 Connected to MongoDB'))
   .catch((err) => console.error('❌ MongoDB connection error:', err));
 
@@ -568,8 +565,8 @@ app.get('/api/conversations/:userId', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 2001;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
 });
 
 // const express = require('express');
