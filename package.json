@@ -4,8 +4,10 @@
   "description": "",
   "main": "index.js",
   "type": "commonjs",
-  "scripts": {
-    "dev": "nodemon src/index.js"
+ "scripts": {
+    "dev": "nodemon ./index.js",
+    "start": "node ./index.js",
+    "build": "echo 'No build step required'"
   },
   "author": "",
   "license": "ISC",
