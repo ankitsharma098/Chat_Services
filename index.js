@@ -3,14 +3,11 @@ const http = require('http');
 const cors = require('cors');
 const socketIO = require('socket.io');
 const mongoose = require('mongoose');
-const Conversation = require('./conversation');
+const axios = require('axios');
+const Conversation = require('./conversation'); // Make sure your Conversation model is defined
 
 const app = express();
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  credentials: true,
-}));
+app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -21,1143 +18,355 @@ const io = socketIO(server, {
   },
 });
 
-// MongoDB connection
+// --- MongoDB Connection ---
 mongoose.connect("mongodb+srv://ankits45987:major@cluster0.ovdsg.mongodb.net/")
   .then(() => console.log('🚀 Connected to MongoDB'))
   .catch((err) => console.error('❌ MongoDB connection error:', err));
 
-// Socket handler function
+// --- Socket.IO Connection Logic ---
 const setupSocketHandlers = (io) => {
-  const users = {};
-  const roomMembers = {};
+  const users = {}; // In-memory store for user socket IDs
 
-  io.on('connection', (socket) => {
-    console.log(`✅ Connected to /p2p: ${socket.id}`);
-
-    socket.on('register', (userId) => {
-      users[userId] = socket.id;
-      console.log(`👤 Registered: ${userId}`);
-    });
-
-  socket.on('join_room', async ({ roomId, userId, flowType }) => {
-  const uniqueRoomId = `${flowType}_${roomId}`;
-  if (!roomMembers[uniqueRoomId]) {
-    roomMembers[uniqueRoomId] = new Set();
-  }
-  if (roomMembers[uniqueRoomId].has(userId)) {
-    socket.emit('already_joined');
-    console.log(`⚠ User ${userId} already in room ${uniqueRoomId}`);
-    return;
-  }
-  const members = roomMembers[uniqueRoomId];
-  if (members.size >= 2 && !members.has(userId)) {
-    socket.emit('room_full', { message: '❌ Room already has 2 users' });
-    console.log(`❌ ${userId} blocked from joining full room ${uniqueRoomId}`);
-    return;
-  }
-
-  members.add(userId);
-  socket.join(uniqueRoomId);
-  console.log(`📥 ${userId} joined room ${uniqueRoomId}`);
-
-  try {
-    const conversation = await Conversation.findOne({ roomId });
-    if (conversation) {
-      // socket.emit('conversation_history', {
-      //   messages: conversation.messages,
-      //   currentStep: conversation.currentStep,
-      //   isCompleted: conversation.isCompleted,
-
-      // });
-        socket.emit('conversation_history', {
-        messages: conversation.messages,
-        currentStep: conversation.currentStep,
-        isCompleted: conversation.isCompleted,
-        userId: conversation.userId,       // Add this
-        peerId: conversation.peerId,       // Add this
-        orderId: conversation.orderId,     // Add this
-        flowType: conversation.flowType,   // Add this
-      });
-      console.log(`✅ Emitted conversation_history to ${userId} for room ${roomId}`);
-    } else {
-      console.log(`ℹ No conversation found for room ${roomId}`);
-
-      socket.emit('conversation_history', {
-        messages: [],
-        currentStep: 'initial',
-        isCompleted: false
-      });
-    
+  /**
+   * THE SINGLE SOURCE OF TRUTH FOR BROADCASTING STATE.
+   * This helper function ensures the payload sent to clients is always complete and consistent.
+   */
+  const broadcastHistory = (io, uniqueRoomId, conversation) => {
+    if (!conversation) {
+      console.error(`❌ Attempted to broadcast a null conversation for room ${uniqueRoomId}`);
+      return;
     }
-  } catch (err) {
-    console.error(`❌ Error fetching conversation for room ${uniqueRoomId}:`, err);
-  }
-});
 
-
-
-    socket.on('send_message', async ({ roomId, senderId, message, type, flowType }) => {
-      const uniqueRoomId = `${flowType}_${roomId}`;
-      const msg = { roomId, senderId, message, type, timestamp: new Date() };
-      io.to(uniqueRoomId).emit('receive_message', msg);
-      console.log(`📤 ${senderId} to ${uniqueRoomId}: ${message}`);
-
-      try {
-        await Conversation.findOneAndUpdate(
-          { roomId },
-          {
-            $push: { messages: msg },
-            $set: { updatedAt: Date.now() },
-          },
-          { upsert: true }
-        );
-        console.log(`✅ Message saved to MongoDB for room ${roomId}`);
-      } catch (err) {
-        console.error(`❌ Error saving message for room ${roomId}:`, err);
-      }
-    });
-
-//    socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => {
-//   console.log(`📨 Received askAvailability: from=${from}, to=${to}, roomId=${roomId}, orderId=${orderId}, flowType=${flowType}`);
-//   const toSocketId = users[to];
-//   const uniqueRoomId = `${flowType}_${roomId}`;
-  
-//   if (!to) {
-//     console.error(`❌ Error: 'to' field is undefined in askAvailability event`);
-//     socket.emit('error', { message: 'Invalid recipient ID' });
-//     return;
-//   }
-
-//   if (toSocketId) {
-//     io.to(toSocketId).emit('receiveAvailabilityRequest', { from });
-//     console.log(`📨 Emitted receiveAvailabilityRequest to ${toSocketId} (user: ${to})`);
-
-//     const msg = {
-//       senderId: from,
-//       message: `Asked ${to}: Are you available?`,
-//       type: 'text',
-//       timestamp: new Date(),
-//     };
-//     try {
-//       const conversation = await Conversation.findOneAndUpdate(
-//         { roomId },
-//         {
-//           $push: { messages: msg },
-//           $set: {
-//             currentStep: 'availabilityAsked',
-//             userId: from,
-//             peerId: to,
-//             orderId,
-//             flowType,
-//             updatedAt: Date.now(),
-//           },
-//         },
-//         { upsert: true, new: true }
-//       );
-//       console.log(`✅ Availability request saved for room ${roomId}`);
-
-//       // Emit conversation_history to all room members
-//       io.to(uniqueRoomId).emit('conversation_history', {
-//         messages: conversation.messages,
-//         currentStep: conversation.currentStep,
-//         isCompleted: conversation.isCompleted,
-//         userId: from,
-//         peerId: to,
-//         orderId,
-//         flowType,
-//       });
-//       console.log(`✅ Emitted conversation_history for room ${uniqueRoomId}`);
-//     } catch (err) {
-//       console.error(`❌ Error saving availability request for room ${roomId}:`, err);
-//     }
-//   } else {
-//     console.error(`❌ No socket found for user ${to}`);
-//     socket.emit('error', { message: `User ${to} is not online` });
-//   }
-// });
-
-
-socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => {
-  console.log(`📨 Received askAvailability: from=${from}, to=${to}, roomId=${roomId}, orderId=${orderId}, flowType=${flowType}`);
-  const toSocketId = users[to];
-  const uniqueRoomId = `${flowType}_${roomId}`;
-  
-  if (!to) {
-    console.error(`❌ Error: 'to' field is undefined in askAvailability event`);
-    socket.emit('error', { message: 'Invalid recipient ID' });
-    return;
-  }
-
-  // ✅ *** THE FIX IS HERE *** ✅
-
-  // Step 1: Attempt to notify the user if they are online. This can fail.
-  if (toSocketId) {
-    io.to(toSocketId).emit('receiveAvailabilityRequest', { from });
-    console.log(`📨 Emitted receiveAvailabilityRequest to ${toSocketId} (user: ${to})`);
-  } else {
-    console.log(`ℹ️ User ${to} is offline. State will be saved for when they connect.`);
-    // You could also emit an error back to the sender if you want, but it's not necessary
-    // since the state will be saved and the flow will continue.
-    // socket.emit('error', { message: `User ${to} is not online, but request was saved.` });
-  }
-
-  // Step 2: Unconditionally create the message and save the state to the database.
-  // This logic is now OUTSIDE the 'if (toSocketId)' block.
-  const msg = {
-    senderId: from,
-    message: `Are you available?`,
-    type: 'text', // Or a system message type
-    timestamp: new Date(),
-  };
-  try {
-    const conversation = await Conversation.findOneAndUpdate(
-      { roomId },
-      {
-        $push: { messages: msg },
-        $set: {
-          currentStep: 'availabilityAsked',
-          userId: from,
-
-          peerId: to,
-          orderId,
-          flowType,
-          updatedAt: Date.now(),
-        },
-      },
-      { upsert: true, new: true } // 'upsert' creates the doc if it doesn't exist
-    );
-    console.log(`✅ Availability request saved to DB for room ${roomId}`);
-
-    // Step 3: Emit the updated history to the entire room.
-    // This updates the sender's UI to show "Waiting for response...".
-    io.to(uniqueRoomId).emit('conversation_history', {
+    const payload = {
       messages: conversation.messages,
       currentStep: conversation.currentStep,
       isCompleted: conversation.isCompleted,
-      userId: from,
-      peerId: to,
-      orderId,
-      flowType,
+      userId: conversation.userId,
+      peerId: conversation.peerId,
+      orderId: conversation.orderId,
+      flowType: conversation.flowType,
+      transactionDetails: conversation.transactionDetails || null, // CRUCIAL: Always include this key
+    };
+
+    io.to(uniqueRoomId).emit('conversation_history', payload);
+    console.log(`📡 Broadcasted history to ${uniqueRoomId}. Step: ${payload.currentStep}, Completed: ${payload.isCompleted}`);
+  };
+
+  io.on('connection', (socket) => {
+    console.log(`✅ User connected: ${socket.id}`);
+
+    socket.on('register', (userId) => {
+      users[userId] = socket.id;
+      console.log(`👤 User registered: ${userId} with socket ID ${socket.id}`);
     });
-    console.log(`✅ Emitted updated conversation_history to room ${uniqueRoomId}`);
-  } catch (err) {
-    console.error(`❌ Error saving availability request for room ${roomId}:`, err);
-  }
-});
 
-    socket.on('availabilityResponse', async ({ from, to, response, roomId, flowType }) => {
-      const fromSocketId = users[from];
-      const toSocketId = users[to];
+    socket.on('join_room', async ({ roomId, userId, flowType }) => {
       const uniqueRoomId = `${flowType}_${roomId}`;
-      const responsePayload = { from, response };
-      const responseText = response === 'yes' ? 'Yes, available' : 'No, not available';
+      socket.join(uniqueRoomId);
+      console.log(`📥 User ${userId} joined room: ${uniqueRoomId}`);
 
-      if (fromSocketId) io.to(fromSocketId).emit('receiveAvailabilityResponse', responsePayload);
-      if (toSocketId) io.to(toSocketId).emit('receiveAvailabilityResponse', responsePayload);
-
-      const msg = {
-        senderId: from,
-        message: `${responseText}`,
-        type: 'text',
-        timestamp: new Date(),
-      };
-      const nextStep = response === 'yes' ? 'availabilityResponded' : 'availabilityDenied';
       try {
-        await Conversation.findOneAndUpdate(
-          { roomId },
-          {
-            $push: { messages: msg },
-            $set: {
-              currentStep: nextStep,
-              isCompleted: nextStep === 'availabilityDenied',
-              updatedAt: Date.now(),
-            },
-          }
-        );
-        console.log(`✅ Availability response saved for room ${roomId}`);
+        let conversation = await Conversation.findOne({ roomId });
+        if (conversation) {
+          broadcastHistory(io, uniqueRoomId, conversation);
+        } else {
+          // If no history, we don't broadcast anything yet.
+          // The first action (e.g., askAvailability) will create it.
+          console.log(`ℹ No conversation found for room ${roomId}. It will be created on the first action.`);
+        }
       } catch (err) {
-        console.error(`❌ Error saving availability response for room ${roomId}:`, err);
+        console.error(`❌ Error fetching conversation for room ${uniqueRoomId}:`, err);
       }
-
-      console.log(`📨 ${from} responded ${response} to ${to}`);
     });
 
-    socket.on('askBankDetails', async ({ from, to, roomId, flowType }) => {
-      const toSocketId = users[to];
+    // --- Workflow Event Handlers ---
+
+     const handleWorkflowUpdate = async (roomId, uniqueRoomId, updateQuery) => {
+      try {
+        const conversation = await Conversation.findOneAndUpdate({ roomId }, updateQuery, { upsert: true, new: true });
+        broadcastHistory(io, uniqueRoomId, conversation);
+      } catch (err) {
+        console.error(`❌ Error updating workflow for room ${roomId}:`, err);
+      }
+    };
+
+    socket.on('askAvailability', ({ from, to, roomId, orderId, flowType }) => {
       const uniqueRoomId = `${flowType}_${roomId}`;
+      const toSocketId = users[to];
       if (toSocketId) {
+        io.to(toSocketId).emit('receiveAvailabilityRequest', { from });
+      } else {
+         console.log(`ℹ️ User ${to} is offline. State will be saved for when they connect.`);
+      }
+      
+      const update = {
+        $push: { messages: { senderId: from, message: 'Are you available?', type: 'text', timestamp: new Date() } },
+        $set: { currentStep: 'availabilityAsked', userId: from, peerId: to, orderId: roomId.split('_')[0], flowType, updatedAt: Date.now() },
+      };
+      handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    });
+
+    socket.on('availabilityResponse', ({ from, to, response, roomId, flowType }) => {
+      const uniqueRoomId = `${flowType}_${roomId}`;
+      const responseText = response === 'yes' ? 'Yes' : 'No';
+      const nextStep = response === 'yes' ? 'availabilityResponded' : 'availabilityDenied';
+
+      const update = {
+        $push: { messages: { senderId: from, message: responseText, type: 'text', timestamp: new Date() } },
+        $set: { currentStep: nextStep, isCompleted: nextStep === 'availabilityDenied' },
+      };
+      handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    });
+
+    socket.on('askBankDetails', ({ from, to, roomId, flowType }) => {
+      const uniqueRoomId = `${flowType}_${roomId}`;
+      const toSocketId = users[to];
+       if (toSocketId) {
         io.to(toSocketId).emit('receiveBankDetailsRequest', { from });
-        console.log(`📨 ${from} asked ${to} for bank details`);
-
-        const msg = {
-          senderId: from,
-          message: `Share your bank details?`,
-          type: 'text',
-          timestamp: new Date(),
-        };
-        try {
-          await Conversation.findOneAndUpdate(
-            { roomId },
-            {
-              $push: { messages: msg },
-              $set: { currentStep: 'bankDetailsAsked', updatedAt: Date.now() },
-            }
-          );
-          console.log(`✅ Bank details request saved for room ${roomId}`);
-        } catch (err) {
-          console.error(`❌ Error saving bank details request for room ${roomId}:`, err);
-        }
       }
+      const update = {
+        $push: { messages: { senderId: from, message: 'Share your Bank Details?', type: 'text', timestamp: new Date() } },
+        $set: { currentStep: 'bankDetailsAsked' },
+      };
+      handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    });
+    
+    socket.on('sendBankDetails', ({ from, to, bankDetails, roomId, flowType }) => {
+        const uniqueRoomId = `${flowType}_${roomId}`;
+        const toSocketId = users[to];
+
+
+        
+        if (toSocketId) {
+            io.to(toSocketId).emit('receiveBankDetails', { from, bankDetails });
+            io.to(toSocketId).emit('startPaymentTimer', { duration: 300 }); // 5 minutes
+            setTimeout(() => {
+                io.to(toSocketId).emit('showSendReceiptButton', {});
+            }, 20000); // 20 seconds
+        }
+        const update = {
+            $push: { messages: { senderId: from, message: `Bank Details: ${bankDetails}`, type: 'text', timestamp: new Date() } },
+            $set: { currentStep: 'bankDetailsSent' },
+        };
+        handleWorkflowUpdate(roomId, uniqueRoomId, update);
     });
 
-    socket.on('sendBankDetails', async ({ from, to, bankDetails, roomId, flowType }) => {
-      const toSocketId = users[to];
-      const uniqueRoomId = `${flowType}_${roomId}`;
-      if (toSocketId) {
-        io.to(toSocketId).emit('receiveBankDetails', { from, bankDetails });
-        io.to(toSocketId).emit('startPaymentTimer', {
-          from,
-          duration: 300,
-          message: 'Complete payment within 5 minutes',
-        });
-        console.log(`🏦 ${from} sent bank details to ${to} - 5min timer started`);
-
-        setTimeout(() => {
-          io.to(toSocketId).emit('showSendReceiptButton', {
-            delay: 0,
-            message: 'Payment time started. Send receipt when payment is complete.',
-          });
-          console.log(`📱 Send receipt button shown to ${to} after 20 seconds`);
-        }, 20000);
-
-        const msg = {
-          senderId: from,
-          message: `Bank Details: ${bankDetails}`,
-          type: 'text',
-          timestamp: new Date(),
-        };
-        try {
-          await Conversation.findOneAndUpdate(
-            { roomId },
-            {
-              $push: { messages: msg },
-              $set: { currentStep: 'bankDetailsSent', updatedAt: Date.now() },
-            }
-          );
-          console.log(`✅ Bank details saved for room ${roomId}`);
-        } catch (err) {
-          console.error(`❌ Error saving bank details for room ${roomId}:`, err);
-        }
-      }
-    });
-
-    // socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
-    //   const toSocketId = users[to];
-    //   const uniqueRoomId = `${flowType}_${roomId}`;
-    //   if (toSocketId) {
-    //     io.to(toSocketId).emit('receivePaymentReceipt', { from, message: 'Payment done' });
-    //     console.log(`🧾 ${from} sent payment receipt to ${to}`);
-
+    // socket.on('sendMediaReceipt', ({ from, to, roomId, flowType, mediaUrl, utrNumber }) => {
+    //     const uniqueRoomId = `${flowType}_${roomId}`;
     //     const msg = {
-    //       senderId: from,
-    //       message: 'Payment Receipt Sent',
-    //       type: 'text',
-    //       timestamp: new Date(),
+    //         senderId: from,
+    //         message: `Payment Receipt Sent`,
+    //         type: 'image',
+    //         mediaUrl,
+    //         utrNumber,
+    //         timestamp: new Date(),
     //     };
-    //     try {
-    //       await Conversation.findOneAndUpdate(
-    //         { roomId },
-    //         {
-    //           $push: { messages: msg },
-    //           $set: { currentStep: 'receiptSent', updatedAt: Date.now() },
-    //         }
-    //       );
-    //       console.log(`✅ Payment receipt saved for room ${roomId}`);
-    //     } catch (err) {
-    //       console.error(`❌ Error saving payment receipt for room ${roomId}:`, err);
-    //     }
-    //   }
+    //     const update = {
+    //         $push: { messages: msg },
+    //         $set: { currentStep: 'receiptSent' },
+    //     };
+    //     handleWorkflowUpdate(roomId, uniqueRoomId, update);
     // });
+    // Find and REPLACE your 'sendMediaReceipt' handler with this new, robust version.
 
-// In your index.js file inside the io.on('connection', ...) block
-
-// Find the commented-out `socket.on('sendMediaReceipt', ...)` and replace it with this:
-// In your index.js file
-
-// REPLACE your existing 'sendMediaReceipt' handler with this one.
-socket.on('sendMediaReceipt', async ({ from, to, roomId, flowType, mediaUrl }) => {
+socket.on('sendMediaReceipt', async ({ from, to, roomId, flowType, mediaUrl, utrNumber }) => {
   const uniqueRoomId = `${flowType}_${roomId}`;
 
-  // 1. Create the message object
-  const msg = {
-    senderId: from,
-    message: 'Payment Receipt Sent',
-    type: 'image',
-    mediaUrl: mediaUrl,
-    timestamp: new Date(),
-  };
-  
   try {
-    // 2. Find the conversation and update it in one step.
-    // The `{ new: true }` option tells Mongoose to return the document *after* the update has been applied.
-    const updatedConversation = await Conversation.findOneAndUpdate(
-      { roomId },
-      {
-        $push: { messages: msg }, // Add the new image message
-        $set: { currentStep: 'receiptSent', updatedAt: Date.now() }, // Advance the workflow step
-      },
-      { upsert: true, new: true }
-    );
+    // 1. ✅ STATE CHECK: First, find the current state of the conversation.
+    const conversation = await Conversation.findOne({ roomId });
 
-    if (updatedConversation) {
-      // *** THE FIX IS HERE ***
-      // 3. Broadcast the ENTIRE updated state to EVERYONE in the room.
-      // This is the single source of truth. Both the buyer and seller will receive this
-      // and update their UI to the 'receiptSent' step.
-      io.to(uniqueRoomId).emit('conversation_history', {
-        messages: updatedConversation.messages,
-        currentStep: updatedConversation.currentStep,
-        isCompleted: updatedConversation.isCompleted,
-        userId: updatedConversation.userId,
-        peerId: updatedConversation.peerId,
-        orderId: updatedConversation.orderId,
-        flowType: updatedConversation.flowType,
-      });
-
-      console.log(`✅ [${uniqueRoomId}] Receipt sent. Broadcasted updated state to 'receiptSent'.`);
+    // 2. 🛑 GUARD CLAUSE: If the conversation doesn't exist or is already completed/expired, reject the action.
+    if (!conversation || conversation.isCompleted || conversation.currentStep === 'paymentTimerExpired') {
+      console.log(`❌ [${uniqueRoomId}] REJECTED sendMediaReceipt. Chat is already completed or timed out.`);
+      // Optionally, you can emit an error back to the sender so they know it failed.
+      socket.emit('action_rejected', { message: 'Action failed: The chat is already closed or timed out.' });
+      return; // Stop processing immediately.
     }
 
+    // 3. If the state is valid, proceed with the original logic.
+    const msg = {
+      senderId: from,
+      message: `Payment Receipt Sent`,
+      type: 'image',
+      mediaUrl,
+      utrNumber,
+      timestamp: new Date(),
+    };
+    
+    const update = {
+      $push: { messages: msg },
+      $set: { currentStep: 'receiptSent' },
+    };
+    
+    handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    console.log(`✅ [${uniqueRoomId}] Accepted and processed sendMediaReceipt.`);
+
   } catch (err) {
-    console.error(`❌ [${uniqueRoomId}] Error saving/broadcasting payment receipt:`, err);
+    console.error(`❌ [${uniqueRoomId}] Error in sendMediaReceipt handler:`, err);
   }
 });
-// You can now safely REMOVE the old `socket.on('sendReceipt', ...)` handler
-// as it's been replaced by the 'sendMediaReceipt' logic.
-/*
-socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
-  // ... this logic is now obsolete ...
-});
-*/
-    socket.on('confirmPaymentStatus', async ({ from, to, status, roomId, flowType }) => {
-      const toSocketId = users[to];
-      const fromSocketId = users[from];
-      const uniqueRoomId = `${flowType}_${roomId}`;
 
-      if (status === 'yes') {
-        const payload = {
-          from,
-          message: '✅ Payment done and your order is successfully placed',
-          status: true,
-          timestamp: new Date().toISOString(),
-        };
+  socket.on('confirmPaymentStatus', async ({ from, to, status, roomId, flowType, sellerToken }) => {
+        const uniqueRoomId = `${flowType}_${roomId}`;
+        const orderIdForApi = roomId.split('_')[0];
+        let update;
 
-        if (toSocketId) io.to(toSocketId).emit('paymentConfirmed', payload);
-        if (fromSocketId) io.to(fromSocketId).emit('paymentConfirmed', payload);
-
-        const msg = {
-          senderId: from,
-          message: '✅ Payment Confirmed',
-          type: 'text',
-          timestamp: new Date(),
-        };
-        try {
-          await Conversation.findOneAndUpdate(
-            { roomId },
-            {
-              $push: { messages: msg },
-              $set: {
-                currentStep: 'completed',
-                isCompleted: true,
-                updatedAt: Date.now(),
-              },
-            }
-          );
-          console.log(`✅ Payment confirmation saved for room ${roomId}`);
-        } catch (err) {
-          console.error(`❌ Error saving payment confirmation for room ${roomId}:`, err);
+        if (status === 'yes') {
+            // ✅ Make the live API call from the server
+            const finalDetails = await finalizeOrderAndGetDetails(orderIdForApi, to, from, sellerToken);
+            update = {
+                $push: { messages: { senderId: from, message: 'Payment Confirmed', type: 'text', timestamp: new Date() } },
+                $set: {
+                    currentStep: 'completed',
+                    isCompleted: true,
+                    transactionDetails: finalDetails,
+                },
+            };
+        } else {
+            update = {
+                $push: { messages: { senderId: from, message: 'Payment Denied', type: 'text', timestamp: new Date() } },
+                $set: { currentStep: 'paymentDenied', isCompleted: false },
+            };
         }
-
-        console.log(`✅ ${from} confirmed payment with ${to}`);
-      } else {
-        if (toSocketId) {
-          io.to(toSocketId).emit('paymentDenied', {
-            from,
-            status: false,
-            message: `❌ ${from} denied your payment`,
-          });
-        }
-        if (fromSocketId) {
-          io.to(fromSocketId).emit('paymentDenied', {
-            from,
-            status: false,
-            message: '❌ You denied the payment',
-          });
-        }
-
-        const msg = {
-          senderId: from,
-          message: '❌ Payment Denied',
-          type: 'text',
-          timestamp: new Date(),
-        };
-        try {
-          await Conversation.findOneAndUpdate(
-            { roomId },
-            {
-              $push: { messages: msg },
-              $set: { currentStep: 'paymentDenied', updatedAt: Date.now() },
-            }
-          );
-          console.log(`✅ Payment denial saved for room ${roomId}`);
-        } catch (err) {
-          console.error(`❌ Error saving payment denial for room ${roomId}:`, err);
-        }
-
-        console.log(`❌ ${from} denied payment from ${to}`);
-      }
+        handleWorkflowUpdate(roomId, uniqueRoomId, update);
     });
 
     socket.on('reportPaymentConflict', async ({ from, to, orderId, roomId, flowType }) => {
-      const toSocketId = users[to];
-      const fromSocketId = users[from];
-      const uniqueRoomId = `${flowType}_${roomId}`;
-
-      const conflictPayload = {
-        from: 'system',
-        orderId,
-        message: '⚠️ Payment conflict reported to admin for review',
-        timestamp: new Date().toISOString(),
-      };
-
-      if (toSocketId) io.to(toSocketId).emit('paymentConflictReported', conflictPayload);
-      if (fromSocketId) io.to(fromSocketId).emit('paymentConflictReported', conflictPayload);
-
-      const msg = {
-        senderId: from,
-        message: '⚠️ Payment conflict reported to admin for review',
-        type: 'text',
+    const uniqueRoomId = `${flowType}_${roomId}`;
+    
+    // This is the message that will be added to the chat history for everyone to see.
+    const msg = {
+        senderId: from, // We know who reported it
+        message: 'A payment conflict has been reported for admin review.',
+        type: 'text', // Or a 'system' type if you prefer
         timestamp: new Date(),
-      };
-      try {
-        await Conversation.findOneAndUpdate(
-          { roomId },
-          {
-            $push: { messages: msg },
-            $set: { currentStep: 'paymentConflict', updatedAt: Date.now() },
-          }
-        );
-        console.log(`✅ Payment conflict saved for room ${roomId}`);
-      } catch (err) {
-        console.error(`❌ Error saving payment conflict for room ${roomId}:`, err);
-      }
+    };
 
-      console.log(`⚠️ Payment conflict reported by ${from} against ${to} for order ${orderId}`);
-    });
+    // This is the update query for the database.
+    const update = {
+        $push: { messages: msg },
+        $set: {
+            currentStep: 'paymentConflict',
+            // Setting isCompleted to true is a good idea, as it freezes the chat.
+            // Users can no longer interact until an admin intervenes.
+            isCompleted: true, 
+        },
+    };
+    
+    // Call the central helper to update the DB and broadcast the new state to everyone.
+    handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    
+    console.log(`⚠️ Payment conflict reported by ${from} for order ${orderId}. State locked.`);
+});
+// Ensure this handler is correct
 
-    socket.on('paymentTimerExpired', async ({ from, to, orderId, roomId, flowType }) => {
-      const fromSocketId = users[from];
-      const toSocketId = users[to];
-      const uniqueRoomId = `${flowType}_${roomId}`;
-
-      const timeoutPayload = {
-        from: 'system',
-        message: '⏰ Payment time expired! Please contact the seller to resolve.',
-        timestamp: new Date().toISOString(),
-      };
-
-      if (fromSocketId) io.to(fromSocketId).emit('paymentTimeout', timeoutPayload);
-      if (toSocketId) io.to(toSocketId).emit('paymentTimeout', timeoutPayload);
-
-      const msg = {
+socket.on('paymentTimerExpired', async ({ roomId, flowType }) => {
+    const uniqueRoomId = `${flowType}_${roomId}`;
+    const msg = {
         senderId: 'system',
-        message: '⏰ Payment time expired! Please contact the seller to resolve.',
+        message: 'Payment time expired.',
         type: 'text',
         timestamp: new Date(),
-      };
-      try {
-        await Conversation.findOneAndUpdate(
-          { roomId },
-          {
-            $push: { messages: msg },
-            $set: { currentStep: 'paymentTimerExpired', updatedAt: Date.now() },
-          }
-        );
-        console.log(`✅ Payment timeout saved for room ${roomId}`);
-      } catch (err) {
-        console.error(`❌ Error saving payment timeout for room ${roomId}:`, err);
-      }
-
-      console.log(`⏰ Payment timer expired for order ${orderId} between ${from} and ${to}`);
-    });
+    };
+    const update = {
+        $push: { messages: msg },
+        $set: {
+            currentStep: 'paymentTimerExpired',
+            isCompleted: true, // A timeout is a form of completion
+        },
+    };
+    handleWorkflowUpdate(roomId, uniqueRoomId, update);
+    console.log(`⏰ Payment timer expired for room ${uniqueRoomId}. State locked.`);
+});
 
     socket.on('disconnect', () => {
       const user = Object.keys(users).find((u) => users[u] === socket.id);
       if (user) {
         delete users[user];
-        console.log(`❌ Disconnected: ${user}`);
-        for (const roomId in roomMembers) {
-          roomMembers[roomId].delete(user);
-        }
+        console.log(`❌ User disconnected: ${user}`);
       }
     });
   });
 };
 
-// Apply handlers to the single namespace
 setupSocketHandlers(io);
 
-// API Endpoint for fetching conversations
-app.get('/api/conversations/:userId', async (req, res) => {
-  const { userId } = req.params;
+// Find and REPLACE your existing finalizeOrderAndGetDetails function with this one.
+
+async function finalizeOrderAndGetDetails(txnId, buyerAddress, sellerUpbAddress, sellerToken) {
+  console.log("SERVER: Calling LIVE P2PLastStep API...");
+  const url = `https://P2P.upbpay.com/api/order/P2PLastStep?TxnId=${txnId}&BuyerUPBAddress=${buyerAddress}`;
+  const username = 'UPBA_getById';
+  const password = '7hfn894f4jUPBP';
+  const basicAuth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+
+  const headers = {
+    'Authorization': basicAuth,
+    'UpbpAddress': sellerUpbAddress,
+    'Method': 'getById',
+    'Token': sellerToken,
+    'Content-Type': 'application/json',
+  };
+
   try {
-    const conversations = await Conversation.find({
-      $or: [{ userId }, { peerId: userId }],
-    }).sort({ updatedAt: -1 });
-    res.json({
-      success: true,
-      data: conversations,
-    });
-  } catch (err) {
-    console.error('❌ Error fetching conversations:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    const response = await axios.post(url, {}, { headers });
+
+    // Check if the response and its nested 'data' object exist
+    if (response && response.data && response.data.data) {
+      console.log("✅ API call successful, parsing live data:", response.data.data);
+      const apiData = response.data.data;
+      
+      // Parse live data, but provide defaults for each field in case one is missing
+      return {
+        transactionId: apiData.transactionId || txnId || 'TXN_ID_MISSING',
+        coinType: apiData.coinType || 'USDT',
+        amount: parseFloat(apiData.amount) || 0.0,
+        status: apiData.status || 'Completed'
+      };
+    } else {
+      // This case handles a successful API call (200 OK) that returns an empty or unexpected body
+      console.warn("⚠️ API call was successful but returned no data. Using safe defaults.");
+      return {
+        transactionId: txnId || 'TXN_ID_MISSING',
+        coinType: 'USDT',
+        amount: 0.0, // Return 0.0 as requested
+        status: 'Completed (No Data)'
+      };
+    }
+  } catch (error) {
+    // This case handles network errors, 4xx/5xx status codes, etc.
+    console.error("❌ P2PLastStep API call FAILED:", error.message);
+    return {
+      transactionId: txnId || 'TXN_API_ERROR',
+      coinType: 'USDT',
+      amount: 0.0, // Return 0.0 as requested
+      status: 'Completed (API Error)'
+    };
   }
-});
+}
 
 const PORT = process.env.PORT || 2001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
 });
 
-// const express = require('express');
-// const http = require('http');
-// const cors = require('cors');
-// const socketIO = require('socket.io');
-// const mongoose = require('mongoose');
-// const Conversation = require('./conversation');
-// const Notification = require('./notification');
 
-// const app = express();
-// app.use(cors({
-//   origin: '*',
-//   methods: ['GET', 'POST'],
-//   credentials: true,
-// }));
-// app.use(express.json());
-
-// const server = http.createServer(app);
-// const io = socketIO(server, {
-//   cors: {
-//     origin: '*',
-//     methods: ['GET', 'POST'],
-//   },
-// });
-
-// // MongoDB connection
-// mongoose.connect("mongodb+srv://ankits45987:major@cluster0.ovdsg.mongodb.net/", {
-//   useNewUrlParser: true,
-//   useUnifiedTopology: true,
-// })
-//   .then(() => console.log('🚀 Connected to MongoDB'))
-//   .catch((err) => console.error('❌ MongoDB connection error:', err));
-
-// // Socket handler function
-// const setupSocketHandlers = (io) => {
-//   const users = {};
-//   const roomMembers = {};
-
-//   io.on('connection', (socket) => {
-//     console.log(`✅ Connected to /p2p: ${socket.id}`);
-
-//     socket.on('register', async (userId) => {
-//       users[userId] = socket.id;
-//       console.log(`👤 Registered: ${userId}`);
-
-//       // Deliver pending notifications
-//       try {
-//         const pendingNotifications = await Notification.find({ to: userId, delivered: false });
-//         for (const notif of pendingNotifications) {
-//           if (notif.type === 'availabilityRequest') {
-//             socket.emit('receiveAvailabilityRequest', {
-//               from: notif.from,
-//               roomId: notif.roomId,
-//               orderId: notif.orderId,
-//               flowType: notif.flowType,
-//             });
-//             console.log(`📨 Delivered pending availability request to ${userId} from ${notif.from}`);
-//           }
-//           // Mark as delivered
-//           await Notification.updateOne({ _id: notif._id }, { $set: { delivered: true } });
-//         }
-//       } catch (err) {
-//         console.error(`❌ Error delivering pending notifications for ${userId}:`, err);
-//       }
-//     });
-
-//     socket.on('join_room', async ({ roomId, userId, flowType }) => {
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       if (!roomMembers[uniqueRoomId]) {
-//         roomMembers[uniqueRoomId] = new Set();
-//       }
-//       if (roomMembers[uniqueRoomId].has(userId)) {
-//         socket.emit('already_joined');
-//         console.log(`⚠ User ${userId} already in room ${uniqueRoomId}`);
-//         return;
-//       }
-//       const members = roomMembers[uniqueRoomId];
-//       if (members.size >= 2 && !members.has(userId)) {
-//         socket.emit('room_full', { message: '❌ Room already has 2 users' });
-//         console.log(`❌ ${userId} blocked from joining full room ${uniqueRoomId}`);
-//         return;
-//       }
-
-//       members.add(userId);
-//       socket.join(uniqueRoomId);
-//       console.log(`📥 ${userId} joined room ${uniqueRoomId}`);
-
-//       try {
-//         const conversation = await Conversation.findOne({ roomId });
-//         if (conversation) {
-//           socket.emit('conversation_history', {
-//             messages: conversation.messages,
-//             currentStep: conversation.currentStep,
-//             isCompleted: conversation.isCompleted,
-//             userId: conversation.userId,
-//             peerId: conversation.peerId,
-//             orderId: conversation.orderId,
-//             flowType: conversation.flowType,
-//           });
-//           console.log(`✅ Emitted conversation_history to ${userId} for room ${roomId}`);
-//         } else {
-//           console.log(`ℹ No conversation found for room ${roomId}`);
-//         }
-//       } catch (err) {
-//         console.error(`❌ Error fetching conversation for room ${uniqueRoomId}:`, err);
-//       }
-//     });
-
-//     socket.on('send_message', async ({ roomId, senderId, message, type, flowType }) => {
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       const msg = { roomId, senderId, message, type, timestamp: new Date() };
-//       io.to(uniqueRoomId).emit('receive_message', msg);
-//       console.log(`📤 ${senderId} to ${uniqueRoomId}: ${message}`);
-
-//       try {
-//         await Conversation.findOneAndUpdate(
-//           { roomId },
-//           {
-//             $push: { messages: msg },
-//             $set: { updatedAt: Date.now() },
-//           },
-//           { upsert: true }
-//         );
-//         console.log(`✅ Message saved to MongoDB for room ${roomId}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving message for room ${roomId}:`, err);
-//       }
-//     });
-
-//     socket.on('askAvailability', async ({ from, to, roomId, orderId, flowType }) => {
-//       console.log(`📨 Received askAvailability: from=${from}, to=${to}, roomId=${roomId}, orderId=${orderId}, flowType=${flowType}`);
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-
-//       if (!to) {
-//         console.error(`❌ Error: 'to' field is undefined in askAvailability event`);
-//         socket.emit('error', { message: 'Invalid recipient ID' });
-//         return;
-//       }
-
-//       const msg = {
-//         senderId: from,
-//         message: `Asked ${to}: Are you available?`,
-//         type: 'text',
-//         timestamp: new Date(),
-//       };
-
-//       // Save notification
-//       try {
-//         await Notification.create({
-//           from,
-//           to,
-//           roomId,
-//           orderId,
-//           flowType,
-//           type: 'availabilityRequest',
-//           message: `User ${from} asked: Are you available?`,
-//           expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Expire in 7 days
-//         });
-//         console.log(`✅ Notification saved for user ${to}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving notification for user ${to}:`, err);
-//       }
-
-//       if (toSocketId) {
-//         io.to(toSocketId).emit('receiveAvailabilityRequest', { from, roomId, orderId, flowType });
-//         console.log(`📨 Emitted receiveAvailabilityRequest to ${toSocketId} (user: ${to})`);
-
-//         // Mark notification as delivered
-//         await Notification.updateOne(
-//           { to, roomId, delivered: false, type: 'availabilityRequest' },
-//           { $set: { delivered: true } }
-//         );
-//       } else {
-//         console.log(`ℹ User ${to} is offline, notification stored for later delivery`);
-//         socket.emit('info', { message: `User ${to} is not online, notification will be sent when they come online` });
-//       }
-
-//       try {
-//         const conversation = await Conversation.findOneAndUpdate(
-//           { roomId },
-//           {
-//             $push: { messages: msg },
-//             $set: {
-//               currentStep: 'availabilityAsked',
-//               userId: from,
-//               peerId: to,
-//               orderId,
-//               flowType,
-//               updatedAt: Date.now(),
-//             },
-//           },
-//           { upsert: true, new: true }
-//         );
-//         console.log(`✅ Availability request saved for room ${roomId}`);
-
-//         io.to(uniqueRoomId).emit('conversation_history', {
-//           messages: conversation.messages,
-//           currentStep: conversation.currentStep,
-//           isCompleted: conversation.isCompleted,
-//           userId: from,
-//           peerId: to,
-//           orderId,
-//           flowType,
-//         });
-//         console.log(`✅ Emitted conversation_history for room ${uniqueRoomId}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving availability request for room ${roomId}:`, err);
-//       }
-//     });
-
-//     socket.on('availabilityResponse', async ({ from, to, response, roomId, flowType }) => {
-//       const fromSocketId = users[from];
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       const responsePayload = { from, response };
-//       const responseText = response === 'yes' ? 'Yes, available' : 'No, not available';
-
-//       if (fromSocketId) io.to(fromSocketId).emit('receiveAvailabilityResponse', responsePayload);
-//       if (toSocketId) io.to(toSocketId).emit('receiveAvailabilityResponse', responsePayload);
-
-//       const msg = {
-//         senderId: from,
-//         message: `Responded to ${to}: ${responseText}`,
-//         type: 'text',
-//         timestamp: new Date(),
-//       };
-//       const nextStep = response === 'yes' ? 'availabilityResponded' : 'availabilityDenied';
-//       try {
-//         await Conversation.findOneAndUpdate(
-//           { roomId },
-//           {
-//             $push: { messages: msg },
-//             $set: {
-//               currentStep: nextStep,
-//               isCompleted: nextStep === 'availabilityDenied',
-//               updatedAt: Date.now(),
-//             },
-//           }
-//         );
-//         console.log(`✅ Availability response saved for room ${roomId}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving availability response for room ${roomId}:`, err);
-//       }
-
-//       console.log(`📨 ${from} responded ${response} to ${to}`);
-//     });
-
-//     socket.on('askBankDetails', async ({ from, to, roomId, flowType }) => {
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       if (toSocketId) {
-//         io.to(toSocketId).emit('receiveBankDetailsRequest', { from });
-//         console.log(`📨 ${from} asked ${to} for bank details`);
-
-//         const msg = {
-//           senderId: from,
-//           message: `Asked ${to}: Share your bank details?`,
-//           type: 'text',
-//           timestamp: new Date(),
-//         };
-//         try {
-//           await Conversation.findOneAndUpdate(
-//             { roomId },
-//             {
-//               $push: { messages: msg },
-//               $set: { currentStep: 'bankDetailsAsked', updatedAt: Date.now() },
-//             }
-//           );
-//           console.log(`✅ Bank details request saved for room ${roomId}`);
-//         } catch (err) {
-//           console.error(`❌ Error saving bank details request for room ${roomId}:`, err);
-//         }
-//       }
-//     });
-
-//     socket.on('sendBankDetails', async ({ from, to, bankDetails, roomId, flowType }) => {
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       if (toSocketId) {
-//         io.to(toSocketId).emit('receiveBankDetails', { from, bankDetails });
-//         io.to(toSocketId).emit('startPaymentTimer', {
-//           from,
-//           duration: 300,
-//           message: 'Complete payment within 5 minutes',
-//         });
-//         console.log(`🏦 ${from} sent bank details to ${to} - 5min timer started`);
-
-//         setTimeout(() => {
-//           io.to(toSocketId).emit('showSendReceiptButton', {
-//             delay: 0,
-//             message: 'Payment time started. Send receipt when payment is complete.',
-//           });
-//           console.log(`📱 Send receipt button shown to ${to} after 20 seconds`);
-//         }, 20000);
-
-//         const msg = {
-//           senderId: from,
-//           message: `Bank Details: ${bankDetails}`,
-//           type: 'text',
-//           timestamp: new Date(),
-//         };
-//         try {
-//           await Conversation.findOneAndUpdate(
-//             { roomId },
-//             {
-//               $push: { messages: msg },
-//               $set: { currentStep: 'bankDetailsSent', updatedAt: Date.now() },
-//             }
-//           );
-//           console.log(`✅ Bank details saved for room ${roomId}`);
-//         } catch (err) {
-//           console.error(`❌ Error saving bank details for room ${roomId}:`, err);
-//         }
-//       }
-//     });
-
-//     socket.on('sendReceipt', async ({ from, to, roomId, flowType }) => {
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-//       if (toSocketId) {
-//         io.to(toSocketId).emit('receivePaymentReceipt', { from, message: 'Payment done' });
-//         console.log(`🧾 ${from} sent payment receipt to ${to}`);
-
-//         const msg = {
-//           senderId: from,
-//           message: 'Payment Receipt Sent',
-//           type: 'text',
-//           timestamp: new Date(),
-//         };
-//         try {
-//           await Conversation.findOneAndUpdate(
-//             { roomId },
-//             {
-//               $push: { messages: msg },
-//               $set: { currentStep: 'receiptSent', updatedAt: Date.now() },
-//             }
-//           );
-//           console.log(`✅ Payment receipt saved for room ${roomId}`);
-//         } catch (err) {
-//           console.error(`❌ Error saving payment receipt for room ${roomId}:`, err);
-//         }
-//       }
-//     });
-
-//     socket.on('confirmPaymentStatus', async ({ from, to, status, roomId, flowType }) => {
-//       const toSocketId = users[to];
-//       const fromSocketId = users[from];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-
-//       if (status === 'yes') {
-//         const payload = {
-//           from,
-//           message: '✅ Payment done and your order is successfully placed',
-//           status: true,
-//           timestamp: new Date().toISOString(),
-//         };
-
-//         if (toSocketId) io.to(toSocketId).emit('paymentConfirmed', payload);
-//         if (fromSocketId) io.to(fromSocketId).emit('paymentConfirmed', payload);
-
-//         const msg = {
-//           senderId: from,
-//           message: '✅ Payment Confirmed',
-//           type: 'text',
-//           timestamp: new Date(),
-//         };
-//         try {
-//           await Conversation.findOneAndUpdate(
-//             { roomId },
-//             {
-//               $push: { messages: msg },
-//               $set: {
-//                 currentStep: 'completed',
-//                 isCompleted: true,
-//                 updatedAt: Date.now(),
-//               },
-//             }
-//           );
-//           console.log(`✅ Payment confirmation saved for room ${roomId}`);
-//         } catch (err) {
-//           console.error(`❌ Error saving payment confirmation for room ${roomId}:`, err);
-//         }
-
-//         console.log(`✅ ${from} confirmed payment with ${to}`);
-//       } else {
-//         if (toSocketId) {
-//           io.to(toSocketId).emit('paymentDenied', {
-//             from,
-//             status: false,
-//             message: `❌ ${from} denied your payment`,
-//           });
-//         }
-//         if (fromSocketId) {
-//           io.to(fromSocketId).emit('paymentDenied', {
-//             from,
-//             status: false,
-//             message: '❌ You denied the payment',
-//           });
-//         }
-
-//         const msg = {
-//           senderId: from,
-//           message: '❌ Payment Denied',
-//           type: 'text',
-//           timestamp: new Date(),
-//         };
-//         try {
-//           await Conversation.findOneAndUpdate(
-//             { roomId },
-//             {
-//               $push: { messages: msg },
-//               $set: { currentStep: 'paymentDenied', updatedAt: Date.now() },
-//             }
-//           );
-//           console.log(`✅ Payment denial saved for room ${roomId}`);
-//         } catch (err) {
-//           console.error(`❌ Error saving payment denial for room ${roomId}:`, err);
-//         }
-
-//         console.log(`❌ ${from} denied payment from ${to}`);
-//       }
-//     });
-
-//     socket.on('reportPaymentConflict', async ({ from, to, orderId, roomId, flowType }) => {
-//       const toSocketId = users[to];
-//       const fromSocketId = users[from];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-
-//       const conflictPayload = {
-//         from: 'system',
-//         orderId,
-//         message: '⚠️ Payment conflict reported to admin for review',
-//         timestamp: new Date().toISOString(),
-//       };
-
-//       if (toSocketId) io.to(toSocketId).emit('paymentConflictReported', conflictPayload);
-//       if (fromSocketId) io.to(fromSocketId).emit('paymentConflictReported', conflictPayload);
-
-//       const msg = {
-//         senderId: from,
-//         message: '⚠️ Payment conflict reported to admin for review',
-//         type: 'text',
-//         timestamp: new Date(),
-//       };
-//       try {
-//         await Conversation.findOneAndUpdate(
-//           { roomId },
-//           {
-//             $push: { messages: msg },
-//             $set: { currentStep: 'paymentConflict', updatedAt: Date.now() },
-//           }
-//         );
-//         console.log(`✅ Payment conflict saved for room ${roomId}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving payment conflict for room ${roomId}:`, err);
-//       }
-
-//       console.log(`⚠️ Payment conflict reported by ${from} against ${to} for order ${orderId}`);
-//     });
-
-//     socket.on('paymentTimerExpired', async ({ from, to, orderId, roomId, flowType }) => {
-//       const fromSocketId = users[from];
-//       const toSocketId = users[to];
-//       const uniqueRoomId = `${flowType}_${roomId}`;
-
-//       const timeoutPayload = {
-//         from: 'system',
-//         message: '⏰ Payment time expired! Please contact the seller to resolve.',
-//         timestamp: new Date().toISOString(),
-//       };
-
-//       if (fromSocketId) io.to(fromSocketId).emit('paymentTimeout', timeoutPayload);
-//       if (toSocketId) io.to(toSocketId).emit('paymentTimeout', timeoutPayload);
-
-//       const msg = {
-//         senderId: 'system',
-//         message: '⏰ Payment time expired! Please contact the seller to resolve.',
-//         type: 'text',
-//         timestamp: new Date(),
-//       };
-//       try {
-//         await Conversation.findOneAndUpdate(
-//           { roomId },
-//           {
-//             $push: { messages: msg },
-//             $set: { currentStep: 'paymentTimerExpired', updatedAt: Date.now() },
-//           }
-//         );
-//         console.log(`✅ Payment timeout saved for room ${roomId}`);
-//       } catch (err) {
-//         console.error(`❌ Error saving payment timeout for room ${roomId}:`, err);
-//       }
-
-//       console.log(`⏰ Payment timer expired for order ${orderId} between ${from} and ${to}`);
-//     });
-
-//     socket.on('disconnect', () => {
-//       const user = Object.keys(users).find((u) => users[u] === socket.id);
-//       if (user) {
-//         delete users[user];
-//         console.log(`❌ Disconnected: ${user}`);
-//         for (const roomId in roomMembers) {
-//           roomMembers[roomId].delete(user);
-//         }
-//       }
-//     });
-//   });
-// };
-
-// // Apply handlers to the single namespace
-// setupSocketHandlers(io);
-
-// // API Endpoint for fetching conversations
-// app.get('/api/conversations/:userId', async (req, res) => {
-//   const { userId } = req.params;
-//   try {
-//     const conversations = await Conversation.find({
-//       $or: [{ userId }, { peerId: userId }],
-//     }).sort({ updatedAt: -1 });
-//     res.json({
-//       success: true,
-//       data: conversations,
-//     });
-//   } catch (err) {
-//     console.error('❌ Error fetching conversations:', err);
-//     res.status(500).json({ success: false, message: 'Server error' });
-//   }
-// });
-
-// const PORT = process.env.PORT || 2001;
-// server.listen(PORT, () => {
-//   console.log(`🚀 Server running at http://localhost:${PORT}`);
-// });
+const makeApiCall = async (url, method, headers, body = null) => {
+    try {
+        const config = { method, url, headers };
+        if (body) config.data = body;
+        const response = await axios(config);
+        console.log(`✅ API Call to ${url} successful. Status: ${response.status}`);
+        return response.data;
+    } catch (error) {
+        console.error(`❌ API Call to ${url} FAILED.`);
+        if (error.response) {
+            console.error('Error Response Data:', error.response.data);
+            console.error('Error Response Status:', error.response.status);
+        } else {
+            console.error('Error Message:', error.message);
+        }
+        return null; // Return null on failure
+    }
+};
