@@ -312,9 +312,12 @@ async function finalizeOrderAndGetDetails(txnId, buyerAddress, sellerUpbAddress,
   try {
     const response = await axios.post(url, {}, { headers });
 
+        console.log("✅ API call successful, parsing live response:", response);
+
     // Check if the response and its nested 'data' object exist
     if (response && response.data && response.data.data) {
-      console.log("✅ API call successful, parsing live data:", response.data.data);
+         console.log("✅ API call successful, parsing live response.data:", response.data);
+      console.log("✅ API call successful, parsing live response.data.data:", response.data.data);
       const apiData = response.data.data;
       
       // Parse live data, but provide defaults for each field in case one is missing
