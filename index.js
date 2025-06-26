@@ -370,3 +370,19 @@ const makeApiCall = async (url, method, headers, body = null) => {
         return null; // Return null on failure
     }
 };
+
+app.get('/api/conversations/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const conversations = await Conversation.find({
+      $or: [{ userId }, { peerId: userId }],
+    }).sort({ updatedAt: -1 });
+    res.json({
+      success: true,
+      data: conversations,
+    });
+  } catch (err) {
+    console.error('❌ Error fetching conversations:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
