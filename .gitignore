@@ -20,6 +20,7 @@ logs/
 .env.development
 .env.test
 .env.production
+serviceAccountKey.json
 
 # Temporary files
 tmp/
