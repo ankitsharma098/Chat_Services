@@ -241,7 +241,7 @@ const setupSocketHandlers = (io) => {
         const details2 = { recipientId: conversation.peerId, senderId: 'system', messageText };
         
         handleWorkflowUpdate(roomId, uniqueRoomId, update, details1);
-        handleWorkflowUpdate(roomId, uniqueRoomId, update, details2); // You might want to remove one of these if handleWorkflowUpdate broadcasts to all
+        //handleWorkflowUpdate(roomId, uniqueRoomId, update, details2); // You might want to remove one of these if handleWorkflowUpdate broadcasts to all
 
         console.log(`⏰ Payment timer expired for room ${uniqueRoomId}. State locked.`);
     });
